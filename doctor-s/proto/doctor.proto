@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package doctor;
+
+option go_package = "github.com/alikhan-s/doctor-s/proto;doctorpb";
+
+service DoctorService {
+  rpc CreateDoctor(CreateDoctorRequest) returns (DoctorResponse);
+  rpc GetDoctor(GetDoctorRequest) returns (DoctorResponse);
+  rpc ListDoctors(ListDoctorsRequest) returns (ListDoctorsResponse);
+}
+
+message CreateDoctorRequest {
+  string full_name = 1;
+  string specialization = 2;
+  string email = 3;
+}
+
+message GetDoctorRequest {
+  string id = 1;
+}
+
+message ListDoctorsRequest {}
+
+message DoctorResponse {
+  string id = 1;
+  string full_name = 2;
+  string specialization = 3;
+  string email = 4;
+}
+
+message ListDoctorsResponse {
+  repeated DoctorResponse doctors = 1;
+}

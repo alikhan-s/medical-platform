@@ -1,0 +1,124 @@
+version: "3.9"
+
+# Shared network
+networks:
+  medical-net:
+    driver: bridge
+
+# Persistent volumes
+volumes:
+  pg-doctors-data:
+  pg-appointments-data:
+
+# Services
+services:
+
+  # Infrastructure
+
+  pg-doctors:
+    image: postgres:16-alpine
+    container_name: pg-doctors
+    restart: unless-stopped
+    networks: [medical-net]
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg-doctors-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: doctors_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d doctors_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pg-appointments:
+    image: postgres:16-alpine
+    container_name: pg-appointments
+    restart: unless-stopped
+    networks: [medical-net]
+    ports:
+      - "5434:5432"
+    volumes:
+      - pg-appointments-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appointments_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appointments_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nats:
+    image: nats:latest
+    container_name: nats
+    restart: unless-stopped
+    networks: [medical-net]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Application services
+
+  doctor-s:
+    build:
+      context: ./doctor-s
+      dockerfile: Dockerfile
+    container_name: doctor-s
+    restart: unless-stopped
+    networks: [medical-net]
+    ports:
+      - "8081:8081"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@pg-doctors:5432/doctors_db?sslmode=disable
+      NATS_URL: nats://nats:4222
+      GRPC_ADDR: ":8081"
+    depends_on:
+      pg-doctors:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  appointment-s:
+    build:
+      context: .
+      dockerfile: appointment-s/Dockerfile
+    container_name: appointment-s
+    restart: unless-stopped
+    networks: [medical-net]
+    ports:
+      - "8082:8082"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@pg-appointments:5432/appointments_db?sslmode=disable
+      NATS_URL: nats://nats:4222
+      GRPC_ADDR: ":8082"
+      DOCTOR_SERVICE_ADDR: "doctor-s:8081"
+    depends_on:
+      pg-appointments:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      doctor-s:
+        condition: service_started
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    restart: unless-stopped
+    networks: [medical-net]
+    environment:
+      NATS_URL: nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_healthy
