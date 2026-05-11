@@ -1,19 +1,14 @@
-version: "3.9"
-
-# Shared network
 networks:
   medical-net:
     driver: bridge
 
-# Persistent volumes
 volumes:
   pg-doctors-data:
   pg-appointments-data:
+  go-mod-cache:
+  go-build-cache:
 
-# Services
 services:
-
-  # Infrastructure
 
   pg-doctors:
     image: postgres:16-alpine
@@ -61,64 +56,73 @@ services:
     ports:
       - "4222:4222"
       - "8222:8222"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # Application services
 
   doctor-s:
-    build:
-      context: ./doctor-s
-      dockerfile: Dockerfile
+    image: golang:1.22-alpine
     container_name: doctor-s
     restart: unless-stopped
     networks: [medical-net]
     ports:
       - "8081:8081"
+    working_dir: /app
+    volumes:
+      - ./doctor-s:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
     environment:
       DATABASE_URL: postgres://postgres:postgres@pg-doctors:5432/doctors_db?sslmode=disable
       NATS_URL: nats://nats:4222
       GRPC_ADDR: ":8081"
+      CGO_ENABLED: "0"
+    command: ["go", "run", "./cmd/doctor-s"]
     depends_on:
       pg-doctors:
         condition: service_healthy
       nats:
-        condition: service_healthy
+        condition: service_started
 
   appointment-s:
-    build:
-      context: .
-      dockerfile: appointment-s/Dockerfile
+    image: golang:1.22-alpine
     container_name: appointment-s
     restart: unless-stopped
     networks: [medical-net]
     ports:
       - "8082:8082"
+    working_dir: /workspace/appointment-s
+    volumes:
+      - ./doctor-s:/workspace/doctor-s
+      - ./appointment-s:/workspace/appointment-s
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
     environment:
       DATABASE_URL: postgres://postgres:postgres@pg-appointments:5432/appointments_db?sslmode=disable
       NATS_URL: nats://nats:4222
       GRPC_ADDR: ":8082"
       DOCTOR_SERVICE_ADDR: "doctor-s:8081"
+      CGO_ENABLED: "0"
+    command: ["go", "run", "./cmd/appointment-s"]
     depends_on:
       pg-appointments:
         condition: service_healthy
       nats:
-        condition: service_healthy
+        condition: service_started
       doctor-s:
         condition: service_started
 
   notification-service:
-    build:
-      context: ./notification-service
-      dockerfile: Dockerfile
+    image: golang:1.22-alpine
     container_name: notification-service
     restart: unless-stopped
     networks: [medical-net]
+    working_dir: /app
+    volumes:
+      - ./notification-service:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
     environment:
       NATS_URL: nats://nats:4222
+      CGO_ENABLED: "0"
+    command: ["go", "run", "./cmd/notification-service"]
     depends_on:
       nats:
-        condition: service_healthy
+        condition: service_started
