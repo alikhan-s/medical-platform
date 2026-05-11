@@ -74,7 +74,7 @@ func main() {
 	cacheRepo := cache.NewRedisRepository(redisAddr, "doctor")
 	defer cacheRepo.Close()
 
-	// Dependency wiring: repo → core uc → cache wrapper → event wrapper
+	// Dependency wiring: repo -> core uc -> cache wrapper -> event wrapper
 	repo := repository.NewPostgresDoctorRepo(pool)
 	coreUC := usecase.NewDoctorUseCase(repo)
 	cachedUC := cache.NewDoctorCacheUseCase(coreUC, cacheRepo)

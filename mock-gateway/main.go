@@ -38,7 +38,6 @@ func newSeenStore() *seenStore {
 	return &seenStore{keys: make(map[string]struct{})}
 }
 
-// recordOrSeen returns true if the key was already present, false if it was newly recorded.
 func (s *seenStore) recordOrSeen(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
