@@ -11,7 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alikhan-s/doctor-s/internal/cache"
 	"github.com/alikhan-s/doctor-s/internal/event"
+	"github.com/alikhan-s/doctor-s/internal/middleware"
 	"github.com/alikhan-s/doctor-s/internal/repository"
 	transport "github.com/alikhan-s/doctor-s/internal/transport/grpc"
 	"github.com/alikhan-s/doctor-s/internal/usecase"
@@ -37,6 +39,7 @@ func main() {
 	dbURL := mustEnv("DATABASE_URL")
 	natsURL := envOr("NATS_URL", nats.DefaultURL)
 	grpcAddr := envOr("GRPC_ADDR", ":8081")
+	redisAddr := envOr("REDIS_ADDR", "localhost:6379")
 
 	// PostgreSQL
 	pool, err := pgxpool.New(context.Background(), dbURL)
@@ -67,13 +70,25 @@ func main() {
 		defer nc.Drain()
 	}
 
-	// Dependency wiring
+	// Cache
+	cacheRepo := cache.NewRedisRepository(redisAddr, "doctor")
+	defer cacheRepo.Close()
+
+	// Dependency wiring: repo → core uc → cache wrapper → event wrapper
 	repo := repository.NewPostgresDoctorRepo(pool)
-	uc := event.NewDoctorEventUseCase(usecase.NewDoctorUseCase(repo), publisher)
+	coreUC := usecase.NewDoctorUseCase(repo)
+	cachedUC := cache.NewDoctorCacheUseCase(coreUC, cacheRepo)
+	uc := event.NewDoctorEventUseCase(cachedUC, publisher)
 	handler := transport.NewDoctorHandler(uc)
 
+	// Rate limiter
+	rateLimiter := middleware.NewRateLimiter(redisAddr, "doctor")
+	defer rateLimiter.Close()
+
 	// gRPC server
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(rateLimiter.UnaryServerInterceptor()),
+	)
 	pb.RegisterDoctorServiceServer(grpcServer, handler)
 	reflection.Register(grpcServer)
 

@@ -57,8 +57,21 @@ services:
       - "4222:4222"
       - "8222:8222"
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks: [medical-net]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   doctor-s:
-    image: golang:1.22-alpine
+    image: golang:1.24-alpine
     container_name: doctor-s
     restart: unless-stopped
     networks: [medical-net]
@@ -73,6 +86,9 @@ services:
       DATABASE_URL: postgres://postgres:postgres@pg-doctors:5432/doctors_db?sslmode=disable
       NATS_URL: nats://nats:4222
       GRPC_ADDR: ":8081"
+      REDIS_ADDR: "redis:6379"
+      CACHE_TTL_SECONDS: "60"
+      RATE_LIMIT_RPM: "100"
       CGO_ENABLED: "0"
     command: ["go", "run", "./cmd/doctor-s"]
     depends_on:
@@ -80,9 +96,11 @@ services:
         condition: service_healthy
       nats:
         condition: service_started
+      redis:
+        condition: service_started
 
   appointment-s:
-    image: golang:1.22-alpine
+    image: golang:1.24-alpine
     container_name: appointment-s
     restart: unless-stopped
     networks: [medical-net]
@@ -99,6 +117,9 @@ services:
       NATS_URL: nats://nats:4222
       GRPC_ADDR: ":8082"
       DOCTOR_SERVICE_ADDR: "doctor-s:8081"
+      REDIS_ADDR: "redis:6379"
+      CACHE_TTL_SECONDS: "60"
+      RATE_LIMIT_RPM: "100"
       CGO_ENABLED: "0"
     command: ["go", "run", "./cmd/appointment-s"]
     depends_on:
@@ -108,9 +129,11 @@ services:
         condition: service_started
       doctor-s:
         condition: service_started
+      redis:
+        condition: service_started
 
   notification-service:
-    image: golang:1.22-alpine
+    image: golang:1.24-alpine
     container_name: notification-service
     restart: unless-stopped
     networks: [medical-net]
@@ -121,8 +144,32 @@ services:
       - go-build-cache:/root/.cache/go-build
     environment:
       NATS_URL: nats://nats:4222
+      REDIS_ADDR: "redis:6379"
+      GATEWAY_URL: "http://mock-gateway:8080/notify"
+      WORKER_POOL_SIZE: "3"
       CGO_ENABLED: "0"
     command: ["go", "run", "./cmd/notification-service"]
     depends_on:
       nats:
         condition: service_started
+      redis:
+        condition: service_started
+      mock-gateway:
+        condition: service_started
+
+  mock-gateway:
+    image: golang:1.24-alpine
+    container_name: mock-gateway
+    restart: unless-stopped
+    networks: [medical-net]
+    ports:
+      - "8090:8080"
+    working_dir: /app
+    volumes:
+      - ./mock-gateway:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    environment:
+      GATEWAY_PORT: "8080"
+      CGO_ENABLED: "0"
+    command: ["go", "run", "."]

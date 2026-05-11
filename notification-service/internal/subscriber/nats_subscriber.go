@@ -1,12 +1,14 @@
 package subscriber
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"github.com/alikhan-s/notification-service/internal/jobqueue"
 	"github.com/nats-io/nats.go"
 )
 
@@ -25,9 +27,10 @@ type logLine struct {
 type NATSSubscriber struct {
 	conn *nats.Conn
 	subs []*nats.Subscription
+	pool *jobqueue.WorkerPool
 }
 
-func New(url string) (*NATSSubscriber, error) {
+func New(url string, pool *jobqueue.WorkerPool) (*NATSSubscriber, error) {
 	delays := []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second}
 
 	var lastErr error
@@ -51,7 +54,7 @@ func New(url string) (*NATSSubscriber, error) {
 		)
 		if err == nil {
 			log.Printf("INFO [subscriber]: connected to NATS at %s", nc.ConnectedUrl())
-			return &NATSSubscriber{conn: nc}, nil
+			return &NATSSubscriber{conn: nc, pool: pool}, nil
 		}
 
 		lastErr = err
@@ -97,6 +100,40 @@ func (s *NATSSubscriber) handle(msg *nats.Msg) {
 	}
 
 	fmt.Fprintln(os.Stdout, string(out))
+
+	if msg.Subject == "appointments.status_updated" {
+		s.maybeEnqueueDone(msg.Data)
+	}
+}
+
+type statusUpdatedEvent struct {
+	EventType  string `json:"event_type"`
+	OccurredAt string `json:"occurred_at"`
+	ID         string `json:"id"`
+	OldStatus  string `json:"old_status"`
+	NewStatus  string `json:"new_status"`
+}
+
+func (s *NATSSubscriber) maybeEnqueueDone(data []byte) {
+	if s.pool == nil {
+		return
+	}
+	var evt statusUpdatedEvent
+	if err := json.Unmarshal(data, &evt); err != nil {
+		log.Printf("ERROR [subscriber]: decode status_updated event: %v", err)
+		return
+	}
+	if evt.NewStatus != "done" {
+		return
+	}
+
+	job := jobqueue.Job{
+		IdempotencyKey: jobqueue.IdempotencyKey(evt.EventType, evt.ID, evt.OccurredAt),
+		AppointmentID:  evt.ID,
+		OccurredAt:     evt.OccurredAt,
+		Payload:        json.RawMessage(data),
+	}
+	s.pool.Enqueue(context.Background(), job)
 }
 
 func (s *NATSSubscriber) Drain() {

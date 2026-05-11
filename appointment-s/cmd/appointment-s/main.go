@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alikhan-s/appointment-s/internal/cache"
 	"github.com/alikhan-s/appointment-s/internal/client"
 	"github.com/alikhan-s/appointment-s/internal/event"
+	"github.com/alikhan-s/appointment-s/internal/middleware"
 	"github.com/alikhan-s/appointment-s/internal/repository"
 	transport "github.com/alikhan-s/appointment-s/internal/transport/grpc"
 	"github.com/alikhan-s/appointment-s/internal/usecase"
@@ -40,6 +42,7 @@ func main() {
 	natsURL := envOr("NATS_URL", nats.DefaultURL)
 	grpcAddr := envOr("GRPC_ADDR", ":8082")
 	doctorServiceAddr := envOr("DOCTOR_SERVICE_ADDR", "localhost:8081")
+	redisAddr := envOr("REDIS_ADDR", "localhost:6379")
 
 	// PostgreSQL
 	pool, err := pgxpool.New(context.Background(), dbURL)
@@ -78,15 +81,26 @@ func main() {
 	}
 	defer conn.Close()
 
-	// Dependency wiring
+	// Cache
+	cacheRepo := cache.NewRedisRepository(redisAddr, "appointment")
+	defer cacheRepo.Close()
+
+	// Dependency wiring: repo → core uc → cache wrapper → event wrapper
 	repo := repository.NewPostgresAppointmentRepo(pool)
 	docClient := client.NewDoctorGRPCClient(conn)
 	innerUC := usecase.NewAppointmentUseCase(repo, docClient)
-	uc := event.NewAppointmentEventUseCase(innerUC, publisher)
+	cachedUC := cache.NewAppointmentCacheUseCase(innerUC, cacheRepo)
+	uc := event.NewAppointmentEventUseCase(cachedUC, publisher)
 	handler := transport.NewAppointmentHandler(uc)
 
+	// Rate limiter
+	rateLimiter := middleware.NewRateLimiter(redisAddr, "appointment")
+	defer rateLimiter.Close()
+
 	// gRPC server
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(rateLimiter.UnaryServerInterceptor()),
+	)
 	pb.RegisterAppointmentServiceServer(grpcServer, handler)
 	reflection.Register(grpcServer)
 
